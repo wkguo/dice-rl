@@ -10,7 +10,6 @@ import logging
 import math
 import hydra
 from omegaconf import OmegaConf
-import gdown
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # only if you’re sure this runs before any CUDA use
 

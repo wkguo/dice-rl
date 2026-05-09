@@ -115,8 +115,8 @@ tau_unc="${TAU_UNC:-0.0}"
 T_unc="${T_UNC:-0.5}"
 
 # Eval cadence — total eval episodes per evaluation phase = num_eval_episodes × eval_n_envs.
-# Default config: 30 × 10 = 300. Override via env to e.g. 10 × 10 = 100.
-num_eval_episodes="${NUM_EVAL_EPISODES:-30}"
+# Default matches the Robomimic image configs: 10 × 10 = 100.
+num_eval_episodes="${NUM_EVAL_EPISODES:-10}"
 eval_n_envs="${EVAL_N_ENVS:-10}"
 
 for task in "${selected_tasks[@]}"; do

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 State trajectory visualization utilities for analyzing robot policy behavior.
 
@@ -8,8 +10,6 @@ without dimensionality reduction, providing clear and interpretable visualizatio
 import os
 import numpy as np
 import torch
-import plotly.graph_objects as go
-import plotly.express as px
 import logging
 import wandb
 from typing import List, Dict, Optional, Tuple
@@ -74,6 +74,8 @@ class StateTrajectoryVisualizer:
         Returns:
             Plotly figure object
         """
+        import plotly.graph_objects as go
+
         fig = go.Figure()
         
         # Colors for different policies - muted, professional colors
