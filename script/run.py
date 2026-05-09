@@ -30,6 +30,44 @@ sys.stdout = open(sys.stdout.fileno(), mode="w", buffering=1)
 sys.stderr = open(sys.stderr.fileno(), mode="w", buffering=1)
 
 
+def _maybe_limit_cuda_memory():
+    memory_limit_gb = os.environ.get("DICE_RL_CUDA_MEMORY_LIMIT_GB")
+    if memory_limit_gb is None:
+        memory_limit_gb = os.environ.get("PYTORCH_CUDA_MEMORY_LIMIT_GB")
+    if not memory_limit_gb:
+        return
+
+    try:
+        memory_limit_gb = float(memory_limit_gb)
+    except ValueError as exc:
+        raise ValueError(
+            "DICE_RL_CUDA_MEMORY_LIMIT_GB must be a number of GiB, "
+            f"got {memory_limit_gb!r}"
+        ) from exc
+    if memory_limit_gb <= 0:
+        raise ValueError("DICE_RL_CUDA_MEMORY_LIMIT_GB must be positive")
+
+    import torch
+
+    if not torch.cuda.is_available():
+        log.warning("CUDA memory limit requested, but CUDA is not available")
+        return
+
+    limit_bytes = memory_limit_gb * 1024**3
+    for device_idx in range(torch.cuda.device_count()):
+        total_bytes = torch.cuda.get_device_properties(device_idx).total_memory
+        fraction = min(limit_bytes / total_bytes, 1.0)
+        torch.cuda.set_per_process_memory_fraction(fraction, device=device_idx)
+        log.info(
+            "Set CUDA memory cap on visible device %s to %.2f GiB "
+            "(%.1f%% of %.2f GiB)",
+            device_idx,
+            min(memory_limit_gb, total_bytes / 1024**3),
+            fraction * 100,
+            total_bytes / 1024**3,
+        )
+
+
 @hydra.main(
     version_base=None,
     config_path=os.path.join(
@@ -41,6 +79,7 @@ def main(cfg: OmegaConf):
     # NOTE: Don't resolve the entire config here! This breaks configs where
     # agents need to update values before interpolations are resolved.
     # OmegaConf.resolve(cfg)
+    _maybe_limit_cuda_memory()
     # run agent
     cls = hydra.utils.get_class(cfg._target_)
     agent = cls(cfg)

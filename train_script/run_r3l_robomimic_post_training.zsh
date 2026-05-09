@@ -10,6 +10,8 @@ set -euo pipefail
 # Usage:
 #   zsh train_script/run_r3l_robomimic_post_training.zsh
 #   zsh train_script/run_r3l_robomimic_post_training.zsh square device=cuda:1 seed=0
+#   zsh train_script/run_r3l_robomimic_post_training.zsh can
+#   zsh train_script/run_r3l_robomimic_post_training.zsh tool-hang
 #   USE_CADR_U=1 zsh train_script/run_r3l_robomimic_post_training.zsh transport
 #   DRY_RUN=1 zsh train_script/run_r3l_robomimic_post_training.zsh transport
 
@@ -32,7 +34,7 @@ if [[ "${DRY_RUN:-0}" != "1" ]] && ! command -v "${PYTHON_BIN}" >/dev/null 2>&1;
 fi
 
 typeset -a default_tasks selected_tasks hydra_overrides
-default_tasks=(square tool_hang transport)
+default_tasks=(can square tool_hang transport)
 selected_tasks=()
 hydra_overrides=()
 
@@ -41,8 +43,11 @@ while (($#)); do
     all)
       selected_tasks=("${default_tasks[@]}")
       ;;
-    square|tool_hang|transport)
+    can|square|tool_hang|transport)
       selected_tasks+=("$1")
+      ;;
+    tool-hang)
+      selected_tasks+=("tool_hang")
       ;;
     *)
       hydra_overrides+=("$1")
@@ -69,16 +74,24 @@ if [[ "${R3L_REMAP_CUDA_VISIBLE_DEVICES:-1}" == "1" && -z "${CUDA_VISIBLE_DEVICE
   done
 fi
 
-typeset -A ckpt_path data_dir_name
+typeset -A ckpt_path data_dir_name task_label
 ckpt_path=(
+  can        "${DICE_RL_CKPT_LOG_DIR}/robomimic-pretrain/pretrained_bc_policy_can_img/checkpoint/state_2400.pt"
   square     "${DICE_RL_CKPT_LOG_DIR}/robomimic-pretrain/pretrained_bc_policy_square_img/checkpoint/state_2000.pt"
   tool_hang  "${DICE_RL_CKPT_LOG_DIR}/robomimic-pretrain/tool_hang_img/checkpoint/state_1400.pt"
   transport  "${DICE_RL_CKPT_LOG_DIR}/robomimic-pretrain/transport_img/checkpoint/state_2400.pt"
 )
 data_dir_name=(
+  can        "can-img"
   square     "square-img"
   tool_hang  "tool-hang-img"
   transport  "transport-img"
+)
+task_label=(
+  can        "can"
+  square     "square"
+  tool_hang  "tool-hang"
+  transport  "transport"
 )
 
 # R3L knobs
@@ -112,6 +125,9 @@ for task in "${selected_tasks[@]}"; do
   task_data_dir="${DICE_RL_DATA_DIR}/robomimic/${data_dir_name[$task]}"
   normalization_path="${task_data_dir}/ph_pretrain/normalization.npz"
   dataset_path="${task_data_dir}/ph_finetune/train.npz"
+  run_prefix="${task_label[$task]}"
+  run_name="${run_prefix}_r3l_residual_flow_unet_img"
+  wandb_project="${R3L_WANDB_PROJECT:-robomimic-${task}-r3l-post-training-img}"
 
   if [[ "${DRY_RUN:-0}" != "1" ]]; then
     if [[ ! -f "${config_dir}/${config_name}.yaml" ]]; then
@@ -139,8 +155,10 @@ for task in "${selected_tasks[@]}"; do
     "base_policy_path=${ckpt_path[$task]}"
     "normalization_path=${normalization_path}"
     "expert_dataset.dataset_path=${dataset_path}"
-    "wandb.project=robomimic-${task}-r3l-post-training-img"
-    "name=${task}_r3l_residual_flow_unet_img"
+    "wandb.project=${wandb_project}"
+    "wandb.run=${run_prefix}_\${now:%Y-%m-%d}_\${now:%H-%M-%S}_\${seed}"
+    "name=${run_name}"
+    "logdir=log_dir/robomimic-finetune/${run_name}/${run_prefix}_\${now:%Y-%m-%d}_\${now:%H-%M-%S}_\${seed}"
     "_target_=agent.finetune.train_distill_residual_flow_img_agent.TrainDistillResidualFlowImgAgent"
     "model._target_=model.rl.r3l_residual_rl_img.R3LResidualRLImgModel"
     "++model.max_correction=${max_correction}"
