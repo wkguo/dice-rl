@@ -1,11 +1,16 @@
 #!/usr/bin/env zsh
 set -euo pipefail
 
-# Run R3L-style residual post-training on Robomimic image tasks.
+# Run R3L-style residual post-training on Robomimic image tasks, with optional
+# CADR-U (Chunk-Anchored Dynamics Reflection w/ Uncertainty) gating.
+#
+# Set USE_CADR_U=1 to enable the 3-rho fusion gate (anchor σ + RND).
+# Disabling it reverts to the plain R3L best-of-N argmax.
 #
 # Usage:
 #   zsh train_script/run_r3l_robomimic_post_training.zsh
 #   zsh train_script/run_r3l_robomimic_post_training.zsh square device=cuda:1 seed=0
+#   USE_CADR_U=1 zsh train_script/run_r3l_robomimic_post_training.zsh transport
 #   DRY_RUN=1 zsh train_script/run_r3l_robomimic_post_training.zsh transport
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -50,7 +55,7 @@ if ((${#selected_tasks[@]} == 0)); then
   selected_tasks=("${default_tasks[@]}")
 fi
 
-if [[ "${R3L_REMAP_CUDA_VISIBLE_DEVICES:-1}" == "1" && -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+if [[ "${R3L_REMAP_CUDA_VISIBLE_DEVICES:-1}" == "1" && -z "${CUDA_VISIBLE_DEVICES:-}" && ${#hydra_overrides[@]} -gt 0 ]]; then
   for i in {1..${#hydra_overrides[@]}}; do
     if [[ "${hydra_overrides[$i]}" == device=cuda:<-> ]]; then
       gpu_id="${hydra_overrides[$i]#device=cuda:}"
@@ -76,25 +81,30 @@ data_dir_name=(
   transport  "transport-img"
 )
 
+# R3L knobs
 max_correction="${R3L_MAX_CORRECTION:-0.15}"
-# Calibrated for the bounded residual: with tanh/softsign * 0.15 the worst-case
-# ||residual||^2 ~= max_correction^2 = 0.0225, so a coefficient ~ O(20) gives a
-# saturated-residual penalty of ~0.45, comparable in scale to the normalized
-# Q-loss (~O(1)) and prevents the actor from drifting into saturation.
-l2_penalty_coeff="${R3L_L2_PENALTY_COEFF:-20.0}"
-q_chunk_num_samples="${R3L_Q_CHUNK_NUM_SAMPLES:-16}"
-q_chunk_warmup_steps="${R3L_Q_CHUNK_WARMUP_STEPS:-10000}"
-residual_squash="${R3L_RESIDUAL_SQUASH:-softsign}"
-zero_init_final="${R3L_ZERO_INIT_FINAL:-true}"
-max_correction_init="${R3L_MAX_CORRECTION_INIT:-0.03}"
-max_correction_warmup_steps="${R3L_MAX_CORRECTION_WARMUP:-30000}"
-critic_only_warmup_steps="${R3L_CRITIC_ONLY_WARMUP:-5000}"
-use_soft_q_filtering="${R3L_USE_SOFT_Q_FILTERING:-true}"
-# Threshold for q_overestimation < threshold to count as underestimated.
-# A large positive value makes the underestimation gate always-on, so soft
-# Q-filtering reduces to "drop BC penalty whenever the residual policy beats
-# the pretrained policy in Q" (i.e. self-imitation on better samples).
-q_underestimation_threshold="${R3L_Q_UNDERESTIMATION_THRESHOLD:-1000000.0}"
+l2_penalty_coeff="${R3L_L2_PENALTY_COEFF:-0.3}"
+q_chunk_num_samples="${R3L_Q_CHUNK_NUM_SAMPLES:-4}"
+q_chunk_warmup_steps="${R3L_Q_CHUNK_WARMUP_STEPS:-50000}"
+
+# CADR-U knobs
+use_cadr_u="${USE_CADR_U:-0}"
+cadr_warmup_steps="${CADR_WARMUP_STEPS:-${q_chunk_warmup_steps}}"
+rho_fusion_mode="${RHO_FUSION_MODE:-and}"
+cadr_anchor_d_model="${CADR_ANCHOR_D_MODEL:-384}"
+cadr_anchor_n_layers="${CADR_ANCHOR_N_LAYERS:-6}"
+cadr_anchor_n_heads="${CADR_ANCHOR_N_HEADS:-6}"
+cadr_rnd_target_dim="${CADR_RND_TARGET_DIM:-64}"
+cadr_lr="${CADR_LR:-3e-4}"
+tau_dyn="${TAU_DYN:-1.0}"
+T_dyn="${T_DYN:-0.3}"
+tau_unc="${TAU_UNC:-0.0}"
+T_unc="${T_UNC:-0.5}"
+
+# Eval cadence — total eval episodes per evaluation phase = num_eval_episodes × eval_n_envs.
+# Default config: 30 × 10 = 300. Override via env to e.g. 10 × 10 = 100.
+num_eval_episodes="${NUM_EVAL_EPISODES:-30}"
+eval_n_envs="${EVAL_N_ENVS:-10}"
 
 for task in "${selected_tasks[@]}"; do
   config_dir="${ROOT_DIR}/cfg/robomimic/finetune/${task}"
@@ -139,20 +149,30 @@ for task in "${selected_tasks[@]}"; do
     "++model.q_chunk_num_samples=${q_chunk_num_samples}"
     "++model.q_chunk_critic_reduction=min"
     "++model.q_chunk_warmup_steps=${q_chunk_warmup_steps}"
-    "++model.residual_squash=${residual_squash}"
-    "++model.zero_init_final=${zero_init_final}"
-    "++model.max_correction_init=${max_correction_init}"
-    "++model.max_correction_warmup_steps=${max_correction_warmup_steps}"
-    "++model.use_soft_q_filtering=${use_soft_q_filtering}"
-    "++model.q_underestimation_threshold=${q_underestimation_threshold}"
-    "++train.critic_only_warmup_steps=${critic_only_warmup_steps}"
+    # --- CADR-U ---
+    "++model.use_cadr_u=${use_cadr_u}"
+    "++model.cadr_warmup_steps=${cadr_warmup_steps}"
+    "++model.rho_fusion_mode=${rho_fusion_mode}"
+    "++model.cadr_anchor_d_model=${cadr_anchor_d_model}"
+    "++model.cadr_anchor_n_layers=${cadr_anchor_n_layers}"
+    "++model.cadr_anchor_n_heads=${cadr_anchor_n_heads}"
+    "++model.cadr_rnd_target_dim=${cadr_rnd_target_dim}"
+    "++model.cadr_lr=${cadr_lr}"
+    "++model.tau_dyn=${tau_dyn}"
+    "++model.T_dyn=${T_dyn}"
+    "++model.tau_unc=${tau_unc}"
+    "++model.T_unc=${T_unc}"
+    # --- Online exploration / eval strategy ---
     "++online_explore_strategy=r3l_q_chunk"
     "++evaluate_strategy=r3l_q_chunk"
     "++num_exploration_samples=${q_chunk_num_samples}"
+    # --- Eval cadence ---
+    "++num_eval_episodes=${num_eval_episodes}"
+    "++eval_n_envs=${eval_n_envs}"
     "${hydra_overrides[@]}"
   )
 
-  print "\n[R3L] ${task}"
+  print "\n[R3L] ${task}  (use_cadr_u=${use_cadr_u}, eval=${num_eval_episodes}x${eval_n_envs})"
   print -r -- "${cmd[@]}"
   if [[ "${DRY_RUN:-0}" != "1" ]]; then
     "${cmd[@]}"

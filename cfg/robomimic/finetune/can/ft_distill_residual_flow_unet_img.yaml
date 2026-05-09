@@ -204,7 +204,7 @@ expert_dataset:
 # Visualization settings
 visualize_trajectories: false  # Enable trajectory visualization
 visualization_freq: 200000000  # Create visualizations every N steps
-num_eval_episodes: 30
+num_eval_episodes: 10
 eval_n_envs: 10  # Number of parallel environments for evaluation (training uses env.n_envs=4)
 
 # Q-value overestimation analysis
